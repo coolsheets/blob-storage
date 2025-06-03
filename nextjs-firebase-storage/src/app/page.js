@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 //FIREBASE STUFF
 import { storage, auth } from "../../firebaseConfig"; // Adjust the import path as necessary
@@ -24,6 +24,9 @@ export default function Home() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [previewUrl, setPreviewUrl] = useState(null);
   const [user, setUser] = useState(null);
+  const [filesToUpload, setFilesToUpload] = useState([]);
+  const [fileError, setFileError] = useState(null);
+  const dropRef = useRef(null);
 
   //AUTHENTICATION FUNCTIONS
   const signIn = async () => {
@@ -38,33 +41,43 @@ export default function Home() {
   //FILE FUNCTIONS
   //Function for dealing with uploading new files
   const handleUpload = () => {
-    if (!file || !user) return;
-
+    if (!filesToUpload.length || !user) return;
     setUploading(true);
     setUploadProgress(0);
 
-    const storageRef = ref(storage, `uploads/${user.uid}/${file.name}`);
-    const uploadTask = uploadBytesResumable(storageRef, file);
+    const uploadPromises = filesToUpload.map((file) => {
+      const storageRef = ref(storage, `uploads/${user.uid}/${file.name}`);
+      const uploadTask = uploadBytesResumable(storageRef, file);
 
-    uploadTask.on(
-      "state_changed",
-      (snapshot) => {
-        const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-        setUploadProgress(progress);
-      },
-      (error) => {
+      return new Promise((resolve, reject) => {
+        uploadTask.on(
+          "state_changed",
+          (snapshot) => {
+            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+            setUploadProgress(progress);
+          },
+          (error) => reject(error),
+          () => {
+            getDownloadURL(uploadTask.snapshot.ref).then((downloadURL) => {
+              resolve({ name: file.name, url: downloadURL });
+            });
+          }
+        );
+      });
+    });
+
+    Promise.all(uploadPromises)
+      .then((uploadedFiles) => {
+        setFiles((prev) => [...prev, ...uploadedFiles]);
+        setFilesToUpload([]);
+        setFile(null);
+        setPreviewUrl(null);
+        setUploading(false);
+      })
+      .catch((error) => {
         console.error("Upload failed:", error);
         setUploading(false);
-      },
-      () => {
-        getDownloadURL(uploadTask.snapshot.ref).then((downloadURL) => {
-          setFiles((prev) => [...prev, { name: file.name, url: downloadURL }]);
-          setFile(null);
-          setPreviewUrl(null);
-          setUploading(false);
-        });
-      }
-    );
+      });
   };
 
   //Function for deleting individual files
@@ -113,23 +126,58 @@ export default function Home() {
   // Limit file size to 12MB (change as needed)
   const MAX_FILE_SIZE = 12 * 1024 * 1024; // 5MB
 
-  // Show error if file too large
-  const [fileError, setFileError] = useState(null);
+  // Recursive pattern matching for allowed file types
+  const allowedPatterns = [/\.(jpeg|jpg|gif|png|pdf)$/i];
 
-  // Modified file change handler to check file size
+  function matchesAllowedPatterns(fileName) {
+    return allowedPatterns.some((pattern) => pattern.test(fileName));
+  }
+
+  // Modified file change handler for multiple files
   const handleFileChange = (event) => {
-    const selectedFile = event.target.files[0];
-    if (selectedFile) {
-      if (selectedFile.size > MAX_FILE_SIZE) {
-        setFileError("File size exceeds 12MB limit.");
-        setFile(null);
-        setPreviewUrl(null);
+    const selectedFiles = Array.from(event.target.files);
+    handleNewFiles(selectedFiles);
+  };
+
+  // Handle files from drag-and-drop or input
+  function handleNewFiles(selectedFiles) {
+    const validFiles = [];
+    let error = null;
+    selectedFiles.forEach((file) => {
+      if (!matchesAllowedPatterns(file.name)) {
+        error = `File type not allowed: ${file.name}`;
+      } else if (file.size > MAX_FILE_SIZE) {
+        error = `File size exceeds 12MB: ${file.name}`;
       } else {
-        setFile(selectedFile);
-        setPreviewUrl(URL.createObjectURL(selectedFile));
-        setFileError(null);
+        validFiles.push(file);
       }
+    });
+    setFileError(error);
+    if (validFiles.length > 0) {
+      setFilesToUpload((prev) => [...prev, ...validFiles]);
+      setPreviewUrl(URL.createObjectURL(validFiles[0])); // Preview first file
+      setFile(validFiles[0]);
     }
+  }
+
+  // Drag and drop handlers
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const droppedFiles = Array.from(e.dataTransfer.files);
+    handleNewFiles(droppedFiles);
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (dropRef.current) dropRef.current.classList.add("ring-2", "ring-blue-400");
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (dropRef.current) dropRef.current.classList.remove("ring-2", "ring-blue-400");
   };
 
   return (
@@ -146,43 +194,59 @@ export default function Home() {
               Sign Out
             </button>
           </div>
-          <div>
+          {/* Drag and drop zone */}
+          <div
+            ref={dropRef}
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            className="mb-4 p-4 border-2 border-dashed border-gray-300 rounded bg-gray-50 dark:bg-zinc-800 text-center cursor-pointer"
+          >
+            <p className="text-sm text-gray-500">Drag and drop files here, or click to select files</p>
             <input
               type="file"
+              multiple
               onChange={handleFileChange}
-              className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+              className="mt-2 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
             />
-            {fileError && (
-              <p className="text-red-500 mt-2">{fileError}</p>
-            )}
           </div>
-          {previewUrl && (
-            <div>
-              <p className="font-medium mb-2">Preview:</p>
-              {file && file.type.startsWith("image/") ? (
-                <img
-                  src={previewUrl}
-                  alt="Preview"
-                  className="rounded border w-48 mb-2"
-                />
-              ) : file && file.type === "application/pdf" ? (
-                <embed
-                  src={previewUrl}
-                  width="400"
-                  height="300"
-                  type="application/pdf"
-                  className="rounded border mb-2"
-                />
-              ) : (
-                <p className="text-gray-500">Preview not available for this file type.</p>
+          {fileError && (
+            <p className="text-red-500 mt-2">{fileError}</p>
+          )}
+          {/* Show previews for filesToUpload */}
+          {filesToUpload.length > 0 && (
+            <div className="flex flex-wrap gap-4 mb-4">
+              {filesToUpload.map((file, idx) =>
+                file.type.startsWith("image/") ? (
+                  <img
+                    key={idx}
+                    src={URL.createObjectURL(file)}
+                    alt={file.name}
+                    className="w-16 h-16 object-cover rounded border"
+                  />
+                ) : file.type === "application/pdf" ? (
+                  <span
+                    key={idx}
+                    className="w-16 h-16 flex items-center justify-center bg-gray-100 border rounded text-gray-500 text-xs font-mono"
+                  >
+                    PDF
+                  </span>
+                ) : (
+                  <span
+                    key={idx}
+                    className="w-16 h-16 flex items-center justify-center bg-gray-100 border rounded text-gray-400 text-xs font-mono"
+                  >
+                    File
+                  </span>
+                )
               )}
             </div>
           )}
           <button
             onClick={handleUpload}
-            disabled={uploading || !!fileError}
+            disabled={uploading || !!fileError || filesToUpload.length === 0}
             className={`w-full py-2 rounded font-semibold ${
-              uploading || !!fileError
+              uploading || !!fileError || filesToUpload.length === 0
                 ? "bg-gray-300 text-gray-500 cursor-not-allowed"
                 : "bg-blue-600 text-white hover:bg-blue-700 transition"
             }`}
