@@ -26,6 +26,10 @@ export default function Home() {
   const [user, setUser] = useState(null);
   const [filesToUpload, setFilesToUpload] = useState([]);
   const [fileError, setFileError] = useState(null);
+  const [selectedForDelete, setSelectedForDelete] = useState([]);
+  const [duplicateFiles, setDuplicateFiles] = useState([]);
+  const [showDuplicatePrompt, setShowDuplicatePrompt] = useState(false);
+  const [pendingUploadAction, setPendingUploadAction] = useState(null);
   const dropRef = useRef(null);
 
   //AUTHENTICATION FUNCTIONS
@@ -42,10 +46,17 @@ export default function Home() {
   //Function for dealing with uploading new files
   const handleUpload = () => {
     if (!filesToUpload.length || !user) return;
+    if (checkForDuplicates()) return; // Show prompt if duplicates
+
+    uploadFiles(filesToUpload);
+  };
+
+  // Actual upload logic
+  const uploadFiles = (uploadList) => {
     setUploading(true);
     setUploadProgress(0);
 
-    const uploadPromises = filesToUpload.map((file) => {
+    const uploadPromises = uploadList.map((file) => {
       const storageRef = ref(storage, `uploads/${user.uid}/${file.name}`);
       const uploadTask = uploadBytesResumable(storageRef, file);
 
@@ -80,12 +91,32 @@ export default function Home() {
       });
   };
 
+  // Utility to fetch files
+  const fetchFiles = async () => {
+    if (!user) return;
+    const storageRef = ref(storage, `uploads/${user.uid}`);
+    const res = await listAll(storageRef);
+    const fileList = await Promise.all(
+      res.items.map(async (item) => {
+        const url = await getDownloadURL(item);
+        return { name: item.name, url };
+      })
+    );
+    setFiles(fileList);
+  };
+
+  // Use fetchFiles in useEffect and after deletes
+  useEffect(() => {
+    fetchFiles();
+  }, [user]);
+
   //Function for deleting individual files
   const handleDelete = async (fileName) => {
     const fileRef = ref(storage, `uploads/${user.uid}/${fileName}`);
     try {
       await deleteObject(fileRef);
-      setFiles(files.filter((file) => file.name !== fileName));
+      await fetchFiles();
+      setSelectedForDelete((prev) => prev.filter((name) => name !== fileName));
     } catch (error) {
       console.error("Error deleting file:", error);
     }
@@ -129,8 +160,19 @@ export default function Home() {
   // Recursive pattern matching for allowed file types
   const allowedPatterns = [/\.(jpeg|jpg|gif|png|pdf)$/i];
 
-  function matchesAllowedPatterns(fileName) {
-    return allowedPatterns.some((pattern) => pattern.test(fileName));
+  function matchesAllowedPatterns(file) {
+    const allowedPatterns = [/\.(jpeg|jpg|gif|png|pdf)$/i];
+    const allowedMimeTypes = [
+      "image/jpeg", "image/jpg", "image/png", "image/gif", "application/pdf"
+    ];
+    return (
+      allowedPatterns.some((pattern) => pattern.test(file.name)) &&
+      allowedMimeTypes.includes(file.type)
+    );
+  }
+
+  function isSafeFileName(name) {
+    return /^[\w\-.]+$/.test(name);
   }
 
   // Modified file change handler for multiple files
@@ -144,7 +186,9 @@ export default function Home() {
     const validFiles = [];
     let error = null;
     selectedFiles.forEach((file) => {
-      if (!matchesAllowedPatterns(file.name)) {
+      if (!isSafeFileName(file.name)) {
+        error = `Unsafe file name: ${file.name}`;
+      } else if (!matchesAllowedPatterns(file)) {
         error = `File type not allowed: ${file.name}`;
       } else if (file.size > MAX_FILE_SIZE) {
         error = `File size exceeds 12MB: ${file.name}`;
@@ -155,7 +199,7 @@ export default function Home() {
     setFileError(error);
     if (validFiles.length > 0) {
       setFilesToUpload((prev) => [...prev, ...validFiles]);
-      setPreviewUrl(URL.createObjectURL(validFiles[0])); // Preview first file
+      setPreviewUrl(URL.createObjectURL(validFiles[0]));
       setFile(validFiles[0]);
     }
   }
@@ -178,6 +222,66 @@ export default function Home() {
     e.preventDefault();
     e.stopPropagation();
     if (dropRef.current) dropRef.current.classList.remove("ring-2", "ring-blue-400");
+  };
+
+  // Checkbox handler
+  const handleCheckboxChange = (fileName) => {
+    setSelectedForDelete((prev) =>
+      prev.includes(fileName)
+        ? prev.filter((name) => name !== fileName)
+        : [...prev, fileName]
+    );
+  };
+
+  // Delete selected files
+  const handleDeleteSelected = async () => {
+    for (const fileName of selectedForDelete) {
+      await handleDelete(fileName);
+    }
+    setSelectedForDelete([]);
+    await fetchFiles();
+  };
+
+  // Check for duplicates before upload
+  const checkForDuplicates = () => {
+    const existingNames = files.map((f) => f.name);
+    const duplicates = filesToUpload.filter((f) => existingNames.includes(f.name));
+    if (duplicates.length > 0) {
+      setDuplicateFiles(duplicates);
+      setShowDuplicatePrompt(true);
+      return true;
+    }
+    return false;
+  };
+
+  // Duplicate prompt actions
+  const handleDuplicateAction = (action) => {
+    setShowDuplicatePrompt(false);
+    if (action === "cancel") {
+      // Do nothing, cancel upload
+      setFilesToUpload([]);
+    } else if (action === "replace") {
+      // Remove existing files with same name, then upload
+      const filtered = filesToUpload.filter(
+        (f) => !duplicateFiles.some((df) => df.name === f.name)
+      );
+      // Delete existing files from storage
+      duplicateFiles.forEach((file) => handleDelete(file.name));
+      uploadFiles([...filtered, ...duplicateFiles]);
+    } else if (action === "update") {
+      // Rename duplicates and upload all
+      const updated = filesToUpload.map((f) => {
+        if (duplicateFiles.some((df) => df.name === f.name)) {
+          const ext = f.name.includes(".") ? f.name.substring(f.name.lastIndexOf(".")) : "";
+          const base = f.name.replace(ext, "");
+          const newName = `${base}_updated_${Date.now()}${ext}`;
+          return new File([f], newName, { type: f.type });
+        }
+        return f;
+      });
+      uploadFiles(updated);
+    }
+    setDuplicateFiles([]);
   };
 
   return (
@@ -253,10 +357,40 @@ export default function Home() {
           >
             {uploading ? `Uploading... ${Math.round(uploadProgress)}%` : "Upload"}
           </button>
+          <button
+            onClick={handleDeleteSelected}
+            disabled={selectedForDelete.length === 0}
+            className="mb-2 px-4 py-1 bg-red-600 text-white rounded hover:bg-red-700 transition disabled:bg-gray-300 disabled:text-gray-500"
+          >
+            Delete Selected
+          </button>
+          <div className="flex items-center mb-2">
+            <input
+              type="checkbox"
+              checked={selectedForDelete.length === files.length && files.length > 0}
+              onChange={() => {
+                if (selectedForDelete.length === files.length) {
+                  setSelectedForDelete([]);
+                } else {
+                  setSelectedForDelete(files.map((file) => file.name));
+                }
+              }}
+              className="mr-2"
+              id="select-all"
+            />
+            <label htmlFor="select-all" className="font-medium cursor-pointer">
+              Select All
+            </label>
+          </div>
           <ul className="divide-y divide-gray-200">
             {files.map((file) => (
               <li key={file.name} className="py-3 flex items-center justify-between">
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={selectedForDelete.includes(file.name)}
+                    onChange={() => handleCheckboxChange(file.name)}
+                  />
                   {/* File preview thumbnail */}
                   {/\.(jpeg|jpg|gif|png)$/i.test(file.name) ? (
                     <img
@@ -299,6 +433,43 @@ export default function Home() {
               </li>
             ))}
           </ul>
+          {/* Duplicate file prompt */}
+          {showDuplicatePrompt && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div className="bg-white dark:bg-zinc-900 p-6 rounded shadow-lg max-w-sm w-full">
+                <h2 className="font-bold mb-2">Duplicate File(s) Detected</h2>
+                <p className="mb-4">
+                  The following file(s) already exist:
+                  <ul className="list-disc ml-6">
+                    {duplicateFiles.map((f) => (
+                      <li key={f.name}>{f.name}</li>
+                    ))}
+                  </ul>
+                  What would you like to do?
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleDuplicateAction("cancel")}
+                    className="px-3 py-1 bg-gray-300 rounded hover:bg-gray-400"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => handleDuplicateAction("replace")}
+                    className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600"
+                  >
+                    Replace
+                  </button>
+                  <button
+                    onClick={() => handleDuplicateAction("update")}
+                    className="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600"
+                  >
+                    Add as Updated
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <button
