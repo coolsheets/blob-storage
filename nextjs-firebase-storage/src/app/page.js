@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 
-//FIREBASSE STUFF
+//FIREBASE STUFF
 import { storage, auth } from "../../firebaseConfig"; // Adjust the import path as necessary
 import {
   ref,
