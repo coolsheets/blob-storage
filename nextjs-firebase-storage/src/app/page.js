@@ -110,8 +110,8 @@ export default function Home() {
     fetchFiles();
   }, [user]);
 
-  // Limit file size to 5MB (change as needed)
-  const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+  // Limit file size to 12MB (change as needed)
+  const MAX_FILE_SIZE = 12 * 1024 * 1024; // 5MB
 
   // Show error if file too large
   const [fileError, setFileError] = useState(null);
@@ -121,7 +121,7 @@ export default function Home() {
     const selectedFile = event.target.files[0];
     if (selectedFile) {
       if (selectedFile.size > MAX_FILE_SIZE) {
-        setFileError("File size exceeds 5MB limit.");
+        setFileError("File size exceeds 12MB limit.");
         setFile(null);
         setPreviewUrl(null);
       } else {
